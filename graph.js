@@ -1,33 +1,53 @@
-var window = window || {};
+/*global window: false */
+/*global console: false */
 (function () {
     'use strict';
-
-    var console = window.console || {
-        log: function () {}
-    };
-
-    function clone(oldObject) {
-        return JSON.parse(JSON.stringify(oldObject));
-    }
-
-    //http://stackoverflow.com/a/9924463
     var STRIP_COMMENTS = /((\/\/.*$)|(\/\*[\s\S]*?\*\/))/mg;
     var ARGUMENT_NAMES = /([^\s,]+)/g;
+    var PROCESSING = 1;
+    var DONE = 2;
 
+    function cloneSimple(source) {
+        var target = {};
+        Object.keys(source).forEach(function (key) {
+            if (source.hasOwnProperty(key)) {
+                target[key] = source[key];
+            }
+        });
+        return target;
+    }
+
+    // http://stackoverflow.com/a/9924463
     function getParamNames(func) {
         var fnStr = func.toString().replace(STRIP_COMMENTS, '');
-        var result = fnStr.slice(fnStr.indexOf('(') + 1, fnStr.indexOf(')')).match(ARGUMENT_NAMES);
-        if (result === null)
-            result = [];
+        var result = fnStr.slice(fnStr.indexOf('(') + 1, fnStr.indexOf(')')).match(ARGUMENT_NAMES) || [];
         return result;
     }
 
     function getDependencies(graph) {
         var dependencies = {};
-        for (var k in graph) {
-            dependencies[k] = getParamNames(graph[k]);
-        }
+        Object.keys(graph).forEach(function (key) {
+            dependencies[key] = getParamNames(graph[key]);
+        });
         return dependencies;
+    }
+
+    function process(currentNode, dependencies, status, callList) {
+        if (!dependencies[currentNode]) {
+            return;
+        }
+        status[currentNode] = PROCESSING;
+        for (var i = 0, length = dependencies[currentNode].length; i < length; ++i) {
+            var currentArg = dependencies[currentNode][i];
+            if (status[currentArg] === PROCESSING) {
+                throw new Error('Cyclic dependency found');
+            }
+            if (status[currentArg] !== DONE) {
+                process(currentArg, dependencies, status, callList);
+            }
+        }
+        status[currentNode] = DONE;
+        callList.push(currentNode);
     }
 
     function tryResolveArgs(dependencies, resultsMap) {
@@ -41,54 +61,61 @@ var window = window || {};
         return args;
     }
 
+    function calculateValues(startValue, callList, dependencies, graph) {
+        var resultsMap = cloneSimple(startValue);
+        for (var i = 0, length = callList.length; i < length; ++i) {
+            if (!(callList[i] in resultsMap)) {
+                var args = tryResolveArgs(dependencies[callList[i]], resultsMap);
+                if (!args) {
+                    throw new Error('Can\'t resolve dependency ' + callList[i]);
+                }
+                resultsMap[callList[i]] = graph[callList[i]].apply(null, args);
+            }
+        }
+        return resultsMap;
+    }
+
     function graphEagerCompile(graph) {
-        var PROCESSING = 1,
-            DONE = 2;
-
-        var dependencies = getDependencies(graph),
-            status = {},
-            callList = [];
-
+        var dependencies = getDependencies(graph);
         console.log('dependencies: ' + JSON.stringify(dependencies));
 
-        function process(currentNode) {
-            if (!dependencies[currentNode]) {
-                return;
-            }
-            status[currentNode] = PROCESSING;
-            for (var i = 0, length = dependencies[currentNode].length; i < length; ++i) {
-                var currentArg = dependencies[currentNode][i];
-                if (status[currentArg] === PROCESSING) {
-                    throw 'Cyclic dependency found';
-                }
-                if (status[currentArg] !== DONE) {
-                    process(currentArg);
-                }
-            }
-            status[currentNode] = DONE;
-            callList.push(currentNode);
-        }
+        var status = {};
+        var callList = [];
 
-        //topological sort on dependencies
-        for (var node in dependencies) {
+        // topological sort on dependencies
+        Object.keys(dependencies).forEach(function (node) {
             if (status[node] !== DONE) {
-                process(node);
+                process(node, dependencies, status, callList);
             }
-        }
+        });
+
         console.log('callList: ' + callList);
 
         return function (startValue) {
-            var resultsMap = clone(startValue);
+            return calculateValues(startValue, callList, dependencies, graph);
+        };
+    }
 
-            for (var i = 0, length = callList.length; i < length; ++i) {
-                if (!(callList[i] in resultsMap)) {
-                    var args = tryResolveArgs(dependencies[callList[i]], resultsMap);
-                    if (!args) {
-                        throw 'Can\'t resolve dependency ' + callList[i];
-                    }
-                    resultsMap[callList[i]] = graph[callList[i]].apply(null, args);
+    function graphLazyCompile(graph) {
+        var dependencies = getDependencies(graph);
+
+        return function (startValue, functions) {
+            var status = {};
+            var callList = [];
+
+            functions.forEach(function (node) {
+                if (status[node] !== DONE) {
+                    process(node, dependencies, status, callList);
                 }
-            }
+            });
+
+            console.log('callList: ' + callList);
+
+            var values = calculateValues(startValue, callList, dependencies, graph);
+            var resultsMap = cloneSimple(startValue);
+            functions.forEach(function (f) {
+                resultsMap[f] = values[f];
+            });
             return resultsMap;
         };
     }
@@ -117,9 +144,13 @@ var window = window || {};
         }
     };
 
-    var stats = graphEagerCompile(statsGraph);
+    var eagerStats = graphEagerCompile(statsGraph);
+    var lazyStats = graphLazyCompile(statsGraph);
 
-    console.log(stats({
+    console.log(eagerStats({
         xs: [1, 2, 3, 6]
     }));
+    console.log(lazyStats({
+        xs: [1, 2, 3, 6]
+    }, ['n', 'k']));
 }());
