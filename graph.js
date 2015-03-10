@@ -104,6 +104,9 @@
             var callList = [];
 
             functions.forEach(function (node) {
+                if (!(node in graph)){
+                    throw new Error('Can\'t resolve dependency \'' + node + '\'');
+                }
                 if (status[node] !== DONE) {
                     process(node, dependencies, status, callList);
                 }
@@ -152,5 +155,5 @@
     }));
     console.log(lazyStats({
         xs: [1, 2, 3, 6]
-    }, ['n', 'k']));
+    }, ['n', 'k', 'd']));
 }());
